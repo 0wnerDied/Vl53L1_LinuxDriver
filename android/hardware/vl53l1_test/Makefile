@@ -1,0 +1,25 @@
+CC=arm-linux-gnueabihf-gcc
+
+CFLAGS=-O0 -g -Wall
+CPPFLAGS=-I$(DRIVER_DIR) -I$(DRIVER_DIR)/inc
+LDLIBS=-lrt
+
+PHIO_BIN:=phio
+PHIO_OBJS:=phio.o
+
+VL53l1_REG_BIN:=vl53l1_reg
+VL53l1_REG_OBJS:=vl53l1_reg.o
+
+VL53l1_IOTEST_BIN:=vl53l1_iotest
+VL53l1_IOTEST_OBJS:=vl53l1_iotest.o
+
+all: $(PHIO_BIN) $(VL53l1_REG_BIN) $(VL53l1_IOTEST_BIN)
+
+clean:
+	rm -f $(PHIO_BIN) $(PHIO_OBJS) $(VL53l1_REG_BIN) $(VL53l1_REG_OBJS) $(VL53l1_IOTEST_BIN) $(VL53l1_IOTEST_OBJS)
+
+$(VL53l1_IOTEST_BIN): $(VL53l1_IOTEST_OBJS)
+
+$(VL53l1_REG_BIN): $(VL53l1_REG_OBJS)
+
+$(PHIO_BIN): $(PHIO_OBJS)

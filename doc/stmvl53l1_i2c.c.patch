@@ -1,0 +1,42 @@
+Index: stmvl53l1_i2c.c
+===================================================================
+--- stmvl53l1_i2c.c	(revision 2093)
++++ stmvl53l1_i2c.c	(working copy)
+@@ -49,6 +49,8 @@
+ #	define poll_timing_log(...) (void)0
+ #endif
+ 
++#define WRITE_MULTIPLE_CHUNK_MAX	32
++
+ #if STMVL53L1_LOG_CCI_TIMING
+ /**
+  * compute elapsed time in in micro  sec based on do_gettimeofday
+@@ -268,13 +270,26 @@
+ 		uint8_t *pdata, uint32_t count)
+ {
+ 	struct stmvl53l1_data *dev;
++	uint32_t chunk_size = WRITE_MULTIPLE_CHUNK_MAX;
++	VL53L1_Error status;
++	uint32_t i;
++	uint16_t hostaddr = index;
+ 
+ 	dev = (struct stmvl53l1_data *)container_of(pdev,
+ 			struct stmvl53l1_data,
+ 			stdev);
+ 
+-	return cci_write(dev, index, pdata, count) ?
+-		VL53L1_ERROR_CONTROL_INTERFACE : VL53L1_ERROR_NONE;
++	for (i = 0; i < count; i += chunk_size) {
++		chunk_size = WRITE_MULTIPLE_CHUNK_MAX;
++		status = (cci_write(dev, hostaddr, &pdata[i], min(chunk_size, (count - i))) ?
++				VL53L1_ERROR_CONTROL_INTERFACE : VL53L1_ERROR_NONE);
++		if (status != VL53L1_ERROR_NONE)
++			break;
++		hostaddr += chunk_size;
++	}
++
++	return status;
++
+ }
+ 
+ VL53L1_Error VL53L1_ReadMulti(VL53L1_DEV pdev, uint16_t index,
