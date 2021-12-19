@@ -23,6 +23,8 @@
 
 #include "vl53l1_api.h"
 
+#include "cam_cci_ctrl_interface.h"
+
 struct st_timeval {
 	time64_t tv_sec; /* seconds */
 	long tv_usec; /* microseconds */
@@ -31,6 +33,18 @@ struct st_timeval {
 void st_gettimeofday(struct st_timeval *tv);
 
 #include "stmvl53l1_if.h"
+
+/**
+ * IPP adapt
+ */
+#define IPP_PRINT(...) (void)0
+
+#include "stmvl53l1_ipp.h"
+
+/**
+ * Configure the Netlink-id use
+ */
+#define STMVL531_CFG_NETLINK_USER 31
 
 #define STMVL53L1_MAX_CCI_XFER_SZ	256
 #define STMVL53L1_DRV_NAME	"stmvl53l1"
@@ -115,6 +129,36 @@ extern int stmvl53l1_enable_debug;
 #include <net/sock.h>
 #include <linux/netlink.h>
 #include <linux/wait.h>
+
+/** if set to 1 enable ipp execution timing (if debug enabled)
+ * @ingroup vl53l1_mod_dbg
+ */
+#define IPP_LOG_TIMING	0
+
+struct ipp_data_t {
+	struct ipp_work_t work;
+	struct ipp_work_t work_out;
+	int test_n;
+	/*!< buzy state 0 is idle
+	 *any other value do not try to use (state value defined in source)
+	 */
+	int buzy;
+	int waited_xfer_id;
+	/*!< when buzy is set that is the id we are expecting
+	 * note that value 0 is reserved and stand for "not waiting"
+	 * as such never id 0 will be in any round trip exchange
+	 * it's ok for daemon to use 0 in "ping" when it identify himself
+	 */
+	int status;	/** if that is not 0 do not look at out work data */
+	wait_queue_head_t waitq;
+	/*!< ipp caller are put in that queue wait while job is posted to user
+	 * @warning  ipp and dev mutex will be released before waiting
+	 * see @ref ipp_abort
+	 */
+#if IPP_LOG_TIMING
+	struct timeval start_tv, stop_tv;
+#endif
+};
 
 struct stmvl53l1_waiters {
 	struct list_head list;
@@ -229,7 +273,23 @@ struct stmvl53l1_data {
 	/* autonomous config */
 	uint32_t auto_pollingTimeInMs;
 	VL53L1_DetectionConfig_t auto_config;
-
+	
+		/* Debug */
+	struct ipp_data_t ipp;
+#if IPP_LOG_TIMING
+#define stmvl531_ipp_tim_stop(data)\
+	do_gettimeofday(&data->ipp.stop_tv)
+#define stmvl531_ipp_tim_start(data)\
+	do_gettimeofday(&data->ipp.start_tv)
+#define stmvl531_ipp_time(data)\
+	stmvl53l1_tv_dif(&data->ipp.start_tv, &data->ipp.stop_tv)
+#define stmvl531_ipp_stat(data, fmt, ...)\
+	vl53l1_dbgmsg("IPPSTAT " fmt "\n", ##__VA_ARGS__)
+#else
+#define stmvl531_ipp_tim_stop(data) (void)0
+#define stmvl531_ipp_tim_start(data) (void)0
+#define stmvl531_ipp_stat(...) (void)0
+#endif
 };
 
 
@@ -255,6 +315,51 @@ void stmvl53l1_cleanup(struct stmvl53l1_data *data);
 void stmvl53l1_pm_suspend_stop(struct stmvl53l1_data *data);
 #endif
 int stmvl53l1_intr_handler(struct stmvl53l1_data *data);
+
+/**
+ * request ipp to abort or stop
+ *
+ * require dev work_mutex held
+ *
+ * @warning because the "waiting" work can't be aborted we must wake it up
+ * it will happen and at some later time not earlier than release of lock
+ * if after lock release we have a new request to start the race may not be
+ * handled correctly
+ *
+ * @param data the device
+ * @return 0 if no ipp got canceled, @warning this is maybe not grant we
+ * can't re-sched "dev work"  and re-run the worker back
+ */
+int stmvl53l1_ipp_stop(struct stmvl53l1_data *data);
+
+int stmvl53l1_ipp_do(struct stmvl53l1_data *data, struct ipp_work_t *work_in,
+		struct ipp_work_t *work_out);
+
+/**
+ * per device netlink init
+ * @param data
+ * @return
+ */
+int stmvl53l1_ipp_setup(struct stmvl53l1_data *data);
+
+/**
+ * per device ipp netlink cleaning
+ * @param data
+ * @return
+ */
+void stmvl53l1_ipp_cleanup(struct stmvl53l1_data *data);
+
+/**
+ * Module init for netlink
+ * @return 0 on success
+ */
+int stmvl53l1_ipp_init(void);
+
+/**
+ * Module exit for netlink
+ * @return 0 on success
+ */
+void stmvl53l1_ipp_exit(void);
 
 
 /*

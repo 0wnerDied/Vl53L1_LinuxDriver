@@ -67,14 +67,14 @@
  *
  * @note apply only for device operating in polling mode only
  */
-#define STMVL53L1_CFG_POLL_DELAY_MS	5
+#define STMVL53L1_CFG_POLL_DELAY_MS	30
 
 /**
  * default timing budget in microsecond
  *
  * Can be change at run time via @ref vl53l1_ioctl or @ref sysfs_attrib
  */
-#define STMVL53L1_CFG_TIMING_BUDGET_US	16000
+#define STMVL53L1_CFG_TIMING_BUDGET_US	30000
 
 /** default preset ranging mode */
 #define STMVL53L1_CFG_DEFAULT_MODE VL53L1_PRESETMODE_RANGING
@@ -92,7 +92,7 @@
 	VL53L1_OFFSETCORRECTIONMODE_STANDARD
 
 /** default Dmax mode */
-#define STMVL53L1_CFG_DEFAULT_DMAX_MODE		VL53L1_DMAXMODE_FMT_CAL_DATA
+#define STMVL53L1_CFG_DEFAULT_DMAX_MODE		VL53L1_DMAXMODE_CUSTCAL_DATA
 
 /** default smudge correction enable value */
 #define STMVL53L1_CFG_DEFAULT_SMUDGE_CORRECTION_MODE \
@@ -142,7 +142,7 @@ static int stmvl53l1_release(struct inode *inode, struct file *file);
 static int ctrl_start(struct stmvl53l1_data *data);
 static int ctrl_stop(struct stmvl53l1_data *data);
 
-static bool force_device_on_en_default = true;
+static bool force_device_on_en_default = false;
 
 module_param(force_device_on_en_default, bool, 0444);
 MODULE_PARM_DESC(force_device_on_en_default,
@@ -258,8 +258,13 @@ struct stmvl53l1_module_fn_t {
 
 /** i2c module interface*/
 static struct stmvl53l1_module_fn_t stmvl53l1_module_func_tbl = {
+#ifdef USE_CAMERA_CCI
+	.init = stmvl53l1_init_cci,
+	.deinit = stmvl53l1_exit_cci,
+#else
 	.init = stmvl53l1_init_i2c,
 	.deinit = stmvl53l1_exit_i2c,
+#endif
 	.power_up = stmvl53l1_power_up_i2c,
 	.power_down = stmvl53l1_power_down_i2c,
 	.reset_release = stmvl53l1_reset_release_i2c,
@@ -270,6 +275,7 @@ static struct stmvl53l1_module_fn_t stmvl53l1_module_func_tbl = {
 	.put = stmvl53l1_put,
 };
 
+static bool ipp_inited = false;
 
 #ifndef MIN
 #	define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -395,14 +401,26 @@ static void stmvl53l1_insert_flush_events_lock(struct stmvl53l1_data *data)
 static int reset_release(struct stmvl53l1_data *data)
 {
 	int rc;
+	struct camera_cci_transfer ccit;
 
 	if (!data->reset_state)
 		return 0;
 
+#ifdef USE_CAMERA_CCI
+	memset(&ccit, 0, sizeof(ccit));
+	ccit.cmd = CAMERA_CCI_INIT;
+	cam_cci_control_interface(&ccit);
+#endif
+
 	rc = stmvl53l1_module_func_tbl.reset_release(data->client_object);
-	if (rc)
+	if (rc) {
 		vl53l1_errmsg("reset release fail rc=%d\n", rc);
-	else
+#ifdef USE_CAMERA_CCI
+		memset(&ccit, 0, sizeof(ccit));
+		ccit.cmd = CAMERA_CCI_RELEASE;
+		cam_cci_control_interface(&ccit);
+#endif
+	} else
 		data->reset_state = 0;
 
 	return rc;
@@ -411,6 +429,7 @@ static int reset_release(struct stmvl53l1_data *data)
 static int reset_hold(struct stmvl53l1_data *data)
 {
 	int rc;
+	struct camera_cci_transfer ccit;
 
 	if (data->reset_state)
 		return 0;
@@ -421,6 +440,12 @@ static int reset_hold(struct stmvl53l1_data *data)
 	rc = stmvl53l1_module_func_tbl.reset_hold(data->client_object);
 	if (!rc)
 		data->reset_state = 1;
+
+#ifdef USE_CAMERA_CCI
+	memset(&ccit, 0, sizeof(ccit));
+	ccit.cmd = CAMERA_CCI_RELEASE;
+	cam_cci_control_interface(&ccit);
+#endif
 
 	return rc;
 }
@@ -635,6 +660,30 @@ static int stmvl53l1_sendparams(struct stmvl53l1_data *data)
 		data->smudge_correction_mode);
 
 	/* apply roi if any set */
+	if (data->preset_mode == VL53L1_PRESETMODE_MULTIZONES_SCANNING) {
+		data->roi_cfg.NumberOfRoi = 4;
+		data->roi_cfg.UserRois[0].TopLeftX = 0;
+		data->roi_cfg.UserRois[0].TopLeftY = 15;
+		data->roi_cfg.UserRois[0].BotRightX = 7;
+		data->roi_cfg.UserRois[0].BotRightY = 8;
+
+		data->roi_cfg.UserRois[1].TopLeftX = 8;
+		data->roi_cfg.UserRois[1].TopLeftY = 15;
+		data->roi_cfg.UserRois[1].BotRightX = 15;
+		data->roi_cfg.UserRois[1].BotRightY = 8;
+
+		data->roi_cfg.UserRois[2].TopLeftX = 0;
+		data->roi_cfg.UserRois[2].TopLeftY = 7;
+		data->roi_cfg.UserRois[2].BotRightX = 7;
+		data->roi_cfg.UserRois[2].BotRightY = 0;
+
+		data->roi_cfg.UserRois[3].TopLeftX = 8;
+		data->roi_cfg.UserRois[3].TopLeftY = 7;
+		data->roi_cfg.UserRois[3].BotRightX = 15;
+		data->roi_cfg.UserRois[3].BotRightY = 0;
+	} else {
+		data->roi_cfg.NumberOfRoi = 0;
+	}
 	if (data->roi_cfg.NumberOfRoi) {
 		rc = VL53L1_SetROI(&data->stdev, &data->roi_cfg);
 		if (rc) {
@@ -686,6 +735,9 @@ static int stmvl53l1_start(struct stmvl53l1_data *data)
 	data->is_first_irq = true;
 	data->is_data_valid = false;
 	data->is_xtalk_value_changed = false;
+
+	stmvl53l1_enable_pinctrl();
+	stmvl53l1_module_func_tbl.power_up(data->client_object);
 
 	rc = reset_release(data);
 	if (rc)
@@ -766,9 +818,14 @@ static int stmvl53l1_stop(struct stmvl53l1_data *data)
 		cancel_delayed_work(&data->dwork);
 	}
 
+	/* if we are in ipp waiting mode then abort it */
+	stmvl53l1_ipp_stop(data);
 	/* wake up all waiters */
 	/* they will receive -ENODEV error */
 	wake_up_data_waiters(data);
+
+	stmvl53l1_module_func_tbl.power_down(data->client_object);
+	stmvl53l1_disable_pinctrl();
 
 	return rc;
 }
@@ -3189,6 +3246,8 @@ static int ctrl_perform_calibration(struct stmvl53l1_data *data, void __user *p)
 		vl53l1_errmsg("can't perform calibration while ranging\n");
 		goto done;
 	}
+	vl53l1_info("cali power on");
+	stmvl53l1_module_func_tbl.power_up(data->client_object);
 
 	rc = reset_release(data);
 	if (rc)
@@ -3236,6 +3295,8 @@ static int ctrl_perform_calibration(struct stmvl53l1_data *data, void __user *p)
 	}
 
 	reset_hold(data);
+	vl53l1_info("cali power down");
+	stmvl53l1_module_func_tbl.power_down(data->client_object);
 
 done:
 	data->is_calibrating = false;
@@ -3982,6 +4043,10 @@ int stmvl53l1_setup(struct stmvl53l1_data *data)
 
 	/* init work handler */
 	INIT_DELAYED_WORK(&data->dwork, stmvl53l1_work_handler);
+
+	/* init ipp side */
+	stmvl53l1_ipp_setup(data);
+
 	data->force_device_on_en = force_device_on_en_default;
 	data->reset_state = 1;
 	data->is_calibrating = false;
@@ -4035,6 +4100,30 @@ int stmvl53l1_setup(struct stmvl53l1_data *data)
 	data->poll_delay_ms = STMVL53L1_CFG_POLL_DELAY_MS;
 	data->timing_budget = STMVL53L1_CFG_TIMING_BUDGET_US;
 	data->preset_mode = STMVL53L1_CFG_DEFAULT_MODE;
+	if (data->preset_mode == VL53L1_PRESETMODE_MULTIZONES_SCANNING) {
+		data->roi_cfg.NumberOfRoi = 4;
+		data->roi_cfg.UserRois[0].TopLeftX = 0;
+		data->roi_cfg.UserRois[0].TopLeftY = 15;
+		data->roi_cfg.UserRois[0].BotRightX = 7;
+		data->roi_cfg.UserRois[0].BotRightY = 8;
+
+		data->roi_cfg.UserRois[1].TopLeftX = 8;
+		data->roi_cfg.UserRois[1].TopLeftY = 15;
+		data->roi_cfg.UserRois[1].BotRightX = 15;
+		data->roi_cfg.UserRois[1].BotRightY = 8;
+
+		data->roi_cfg.UserRois[2].TopLeftX = 0;
+		data->roi_cfg.UserRois[2].TopLeftY = 7;
+		data->roi_cfg.UserRois[2].BotRightX = 7;
+		data->roi_cfg.UserRois[2].BotRightY = 0;
+
+		data->roi_cfg.UserRois[3].TopLeftX = 8;
+		data->roi_cfg.UserRois[3].TopLeftY = 7;
+		data->roi_cfg.UserRois[3].BotRightX = 15;
+		data->roi_cfg.UserRois[3].BotRightY = 0;
+	} else {
+		data->roi_cfg.NumberOfRoi = 0;
+	}
 	data->distance_mode = STMVL53L1_CFG_DEFAULT_DISTANCE_MODE;
 	data->crosstalk_enable = STMVL53L1_CFG_DEFAULT_CROSSTALK_ENABLE;
 	data->output_mode = STMVL53L1_CFG_DEFAULT_OUTPUT_MODE;
@@ -4129,6 +4218,12 @@ int stmvl53l1_setup(struct stmvl53l1_data *data)
 	/* bring back device under reset */
 	reset_hold(data);
 
+	rc = stmvl53l1_module_func_tbl.power_down(data->client_object);
+	if (rc) {
+		vl53l1_errmsg("%d,error1 power_down rc %d\n", __LINE__, rc);
+	}
+	stmvl53l1_disable_pinctrl();
+
 	return 0;
 
 exit_unregister_dev_ps:
@@ -4141,6 +4236,12 @@ exit_unregister_dev_ps:
 	input_unregister_device(data->input_dev_ps);
 
 exit_func_end:
+	stmvl53l1_ipp_cleanup(data);
+	rc = stmvl53l1_module_func_tbl.power_down(data->client_object);
+	if (rc) {
+		vl53l1_errmsg("%d,error2 power_down rc %d\n", __LINE__, rc);
+	}
+
 	return rc;
 }
 
@@ -4172,6 +4273,7 @@ void stmvl53l1_cleanup(struct stmvl53l1_data *data)
 		vl53l1_dbgmsg("to unregister misc dev\n");
 		misc_deregister(&data->miscdev);
 	}
+	stmvl53l1_ipp_cleanup(data);
 	/* be sure device is put under reset */
 	data->force_device_on_en = false;
 	reset_hold(data);
@@ -4209,12 +4311,35 @@ static long stmvl53l1_ioctl(struct file *file,
 
 static int __init stmvl53l1_init(void)
 {
-	int rc = -1;
+	int rc = 0;
 
 	vl53l1_dbgmsg("Enter\n");
+	rc = stmvl53l1_ipp_init();
+    if (rc){
+		stmvl53l1_ipp_exit();
+        return rc;
+    }
+    ipp_inited = true;
+
+	return rc;
+}
+
+static int __init stmvl53l1_late_init(void)
+{
+	int rc = 0;
+
+	vl53l1_dbgmsg("Enter\n");
+
 	/* i2c/cci client specific init function */
 	rc = stmvl53l1_module_func_tbl.init();
+	if (rc) {
+		if (ipp_inited)
+			stmvl53l1_ipp_exit();
+		ipp_inited = false;
+	}
+
 	vl53l1_dbgmsg("End %d\n", rc);
+
 	return rc;
 }
 
@@ -4224,6 +4349,8 @@ static void __exit stmvl53l1_exit(void)
 	stmvl53l1_module_func_tbl.deinit(NULL);
 	if (stmvl53l1_module_func_tbl.clean_up != NULL)
 		stmvl53l1_module_func_tbl.clean_up();
+	if (ipp_inited)
+		stmvl53l1_ipp_exit();
 	vl53l1_dbgmsg("End\n");
 }
 
@@ -4235,4 +4362,5 @@ MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION(DRIVER_VERSION);
 
 module_init(stmvl53l1_init);
+late_initcall(stmvl53l1_late_init);
 module_exit(stmvl53l1_exit);

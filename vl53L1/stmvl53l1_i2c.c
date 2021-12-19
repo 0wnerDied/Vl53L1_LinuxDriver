@@ -91,6 +91,7 @@ static uint32_t tv_elapsed_ms(struct st_timeval *tv)
 		(now.tv_usec - tv->tv_usec) / 1000;
 }
 
+#ifndef USE_CAMERA_CCI
 static int cci_write(struct stmvl53l1_data *dev, int index,
 		uint8_t *data, uint16_t len)
 {
@@ -165,29 +166,49 @@ static int cci_read(struct stmvl53l1_data *dev, int index,
 	cci_access_over(" wr len %d status %d", rc != 2, len);
 	return rc != 2;
 }
+#endif
 
 VL53L1_Error VL53L1_WrByte(VL53L1_DEV pdev, uint16_t index, uint8_t data)
 {
+	struct camera_cci_transfer ccit;
 	struct stmvl53l1_data *dev;
 
 	dev = (struct stmvl53l1_data *)container_of(pdev,
 			struct stmvl53l1_data,
 			stdev);
 
+#ifdef USE_CAMERA_CCI
+	memset(&ccit, 0, sizeof(ccit));
+	ccit.cmd = CAMERA_CCI_WRITE;
+	ccit.addr = index;
+	ccit.data = &data;
+	ccit.count = 1;
+	return cam_cci_control_interface(&ccit);
+#else
 	return cci_write(dev, index, &data, 1);
-
+#endif
 }
 
 VL53L1_Error VL53L1_RdByte(VL53L1_DEV pdev, uint16_t index, uint8_t *pdata)
 {
+	struct camera_cci_transfer ccit;
 	struct stmvl53l1_data *dev;
 
 	dev = (struct stmvl53l1_data *)container_of(pdev,
 			struct stmvl53l1_data,
 			stdev);
 
+#ifdef USE_CAMERA_CCI
+	memset(&ccit, 0, sizeof(ccit));
+	ccit.cmd = CAMERA_CCI_READ;
+	ccit.addr = index;
+	ccit.data = pdata;
+	ccit.count = 1;
+	return cam_cci_control_interface(&ccit);
+#else
 	return cci_read(dev, index, pdata, 1) ?
 		VL53L1_ERROR_CONTROL_INTERFACE : VL53L1_ERROR_NONE;
+#endif
 }
 
 VL53L1_Error VL53L1_WrWord(VL53L1_DEV pdev, uint16_t index, uint16_t data)
@@ -250,6 +271,7 @@ VL53L1_Error VL53L1_RdDWord(VL53L1_DEV pdev, uint16_t index, uint32_t *pdata)
 VL53L1_Error VL53L1_WriteMulti(VL53L1_DEV pdev, uint16_t index,
 		uint8_t *pdata, uint32_t count)
 {
+	struct camera_cci_transfer ccit;
 	struct stmvl53l1_data *dev;
 	uint32_t chunk_size = WRITE_MULTIPLE_CHUNK_MAX;
 	VL53L1_Error status;
@@ -261,9 +283,18 @@ VL53L1_Error VL53L1_WriteMulti(VL53L1_DEV pdev, uint16_t index,
 			stdev);
 
 	for (i = 0; i < count; i += chunk_size) {
+#ifdef USE_CAMERA_CCI
+		memset(&ccit, 0, sizeof(ccit));
+		ccit.cmd = CAMERA_CCI_WRITE;
+		ccit.addr = hostaddr;
+		ccit.data = &pdata[i];
+		ccit.count = min(chunk_size, (count - i));
+		status = cam_cci_control_interface(&ccit);
+#else
 		status = (cci_write(dev, hostaddr, &pdata[i], 
 			min(chunk_size, (count - i))) ?
 			VL53L1_ERROR_CONTROL_INTERFACE : VL53L1_ERROR_NONE);
+#endif
 		if (status != VL53L1_ERROR_NONE)
 			break;
 		hostaddr += chunk_size;
@@ -275,14 +306,24 @@ VL53L1_Error VL53L1_WriteMulti(VL53L1_DEV pdev, uint16_t index,
 VL53L1_Error VL53L1_ReadMulti(VL53L1_DEV pdev, uint16_t index,
 		uint8_t *pdata, uint32_t count)
 {
+	struct camera_cci_transfer ccit;
 	struct stmvl53l1_data *dev;
 
 	dev = (struct stmvl53l1_data *)container_of(pdev,
 			struct stmvl53l1_data,
 			stdev);
 
+#ifdef USE_CAMERA_CCI
+	memset(&ccit, 0, sizeof(ccit));
+	ccit.cmd = CAMERA_CCI_READ;
+	ccit.addr = index;
+	ccit.data = pdata;
+	ccit.count = count;
+	return cam_cci_control_interface(&ccit);
+#else
 	return cci_read(dev, index, pdata, count) ?
 		VL53L1_ERROR_CONTROL_INTERFACE : VL53L1_ERROR_NONE;
+#endif
 }
 
 static int is_time_over(struct st_timeval *tv, uint32_t msec)
@@ -296,6 +337,7 @@ VL53L1_Error VL53L1_WaitValueMaskEx(VL53L1_DEV pdev,
 		uint8_t value,
 		uint8_t mask, uint32_t poll_delay_ms)
 {
+	struct camera_cci_transfer ccit;
 	struct st_timeval start_tv;
 	struct stmvl53l1_data *dev;
 	int rc, time_over;
@@ -307,7 +349,16 @@ VL53L1_Error VL53L1_WaitValueMaskEx(VL53L1_DEV pdev,
 
 	st_gettimeofday(&start_tv);
 	do {
+#ifdef USE_CAMERA_CCI
+		memset(&ccit, 0, sizeof(ccit));
+		ccit.cmd = CAMERA_CCI_READ;
+		ccit.addr = index;
+		ccit.data = &rd_val;
+		ccit.count = 1;
+		rc = cam_cci_control_interface(&ccit);
+#else
 		rc = cci_read(dev, index, &rd_val, 1);
+#endif
 		if (rc)
 			return VL53L1_ERROR_CONTROL_INTERFACE;
 		if ((rd_val & mask) == value) {
